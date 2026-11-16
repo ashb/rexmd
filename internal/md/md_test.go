@@ -35,6 +35,14 @@ func TestParseFrontMatter(t *testing.T) {
 	}
 }
 
+func TestParseLeavesColonLinesAsParagraphs(t *testing.T) {
+	root, _ := Parse([]byte("Term\n: not a definition, since GitHub has no definition lists"))
+
+	if _, ok := root.FirstChild().(*ast.Paragraph); !ok {
+		t.Errorf("got %T, want *ast.Paragraph", root.FirstChild())
+	}
+}
+
 func TestParseAlerts(t *testing.T) {
 	tests := []struct {
 		name, src string

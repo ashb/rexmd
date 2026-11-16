@@ -3,6 +3,7 @@ package doc
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -39,6 +40,7 @@ type layouter struct {
 	gap       bool
 	slugs     map[string]int
 	listDepth int
+	anchors   []string
 }
 
 // Layout lays out a goldmark tree whose text segments point into src. Front
@@ -60,6 +62,11 @@ func Layout(root ast.Node, src []byte, o Options) *Document {
 	}
 	l := &layouter{o: o, src: src, doc: &Document{Anchors: map[string]int{}}, slugs: map[string]int{}}
 	l.blocks(root)
+	for _, a := range l.anchors {
+		if _, ok := l.doc.Anchors[a]; !ok {
+			l.doc.Anchors[a] = max(len(l.doc.Lines)-1, 0)
+		}
+	}
 	for n := len(l.doc.Lines); n > 0 && len(l.doc.Lines[n-1].Spans) == 0; n-- {
 		l.doc.Lines = l.doc.Lines[:n-1]
 	}
@@ -107,6 +114,12 @@ func (l *layouter) startBlock() {
 		l.emit(nil)
 	}
 	l.gap = false
+	for _, a := range l.anchors {
+		if _, ok := l.doc.Anchors[a]; !ok {
+			l.doc.Anchors[a] = len(l.doc.Lines)
+		}
+	}
+	l.anchors = nil
 }
 
 func (l *layouter) endBlock() { l.gap = true }
@@ -175,8 +188,14 @@ func (l *layouter) block(n ast.Node) {
 		l.table(v)
 	case *eastast.FootnoteList:
 		l.footnotes(v)
+	case *eastast.DefinitionList:
+		l.definitionList(v)
 	case *Callout:
 		l.callout(v)
+	case *Indent:
+		l.indent(v)
+	case *Anchor:
+		l.anchors = append(l.anchors, v.Names...)
 	case *MathBlock:
 		l.startBlock()
 		if l.diagram(KindMath, v.TeX).State != Ready {
@@ -205,10 +224,15 @@ func (l *layouter) heading(n *ast.Heading) {
 	l.startBlock()
 	txt := plainText(n, l.src)
 	slug := l.slug(txt)
+	if id, ok := n.AttributeString("id"); ok {
+		if b, ok := id.([]byte); ok {
+			slug = string(b)
+		}
+	}
 	line := len(l.doc.Lines)
 	l.doc.Headings = append(l.doc.Headings, Heading{Level: n.Level, Text: txt, Slug: slug, Line: line})
 	l.doc.Anchors[slug] = line
-	color := l.o.Theme.Heading[n.Level-1]
+	color := l.o.Theme.Heading[min(n.Level, len(l.o.Theme.Heading))-1]
 
 	drawn := false
 	if l.o.HeadingImages && n.Level <= 2 {
@@ -367,7 +391,13 @@ func (l *layouter) inline(n ast.Node, st Style, link int, b *inl) {
 			}
 			b.text(string(v.Label(l.src)), l.linkStyle(st, url), l.addLink(url))
 		case *ast.Image:
-			l.image(string(v.Destination), plainText(v, l.src), 0, st, link, b)
+			width := 0
+			if w, ok := v.AttributeString("width"); ok {
+				if b, ok := w.([]byte); ok {
+					width, _ = strconv.Atoi(string(b))
+				}
+			}
+			l.image(string(v.Destination), plainText(v, l.src), width, st, link, b)
 		case *ast.RawHTML:
 			var raw strings.Builder
 			for i := 0; i < v.Segments.Len(); i++ {

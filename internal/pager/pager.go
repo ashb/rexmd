@@ -27,6 +27,7 @@ import (
 	"github.com/ncphillips/rex-md/internal/kitty"
 	"github.com/ncphillips/rex-md/internal/md"
 	"github.com/ncphillips/rex-md/internal/rex"
+	"github.com/ncphillips/rex-md/internal/rst"
 )
 
 type Config struct {
@@ -245,7 +246,9 @@ func (p *Pager) load(path string) error {
 		return err
 	}
 	p.path, p.src = abs, src
-	p.parse()
+	if err := p.parse(); err != nil {
+		p.flash(err.Error())
+	}
 	p.top, p.focus, p.tocSel = 0, 0, 0
 	p.doc = nil
 	p.watch(filepath.Dir(abs))
@@ -272,14 +275,27 @@ func (p *Pager) reload() {
 		return
 	}
 	p.src = src
-	p.parse()
+	if rst.IsRST(p.path) {
+		rst.Forget(p.path)
+	}
+	err = p.parse()
 	p.assets.ForgetLocal()
 	p.relayout()
+	if err != nil {
+		p.flash(err.Error())
+		return
+	}
 	p.flash("reloaded")
 }
 
-func (p *Pager) parse() {
+func (p *Pager) parse() error {
+	if rst.IsRST(p.path) {
+		var err error
+		p.root, p.buf, err = rst.Load(p.path, p.src)
+		return err
+	}
 	p.root, p.buf = md.Parse(p.src)
+	return nil
 }
 
 type noAssets struct{}
