@@ -1,18 +1,14 @@
 package doc
 
 import (
-	"bytes"
 	"fmt"
 	"math"
 	"strings"
 	"unicode"
 
 	"github.com/mattn/go-runewidth"
-	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
-	east "github.com/yuin/goldmark/extension"
 	eastast "github.com/yuin/goldmark/extension/ast"
-	"github.com/yuin/goldmark/text"
 )
 
 type CellSize struct{ W, H int }
@@ -45,9 +41,10 @@ type layouter struct {
 	listDepth int
 }
 
-var markdown = goldmark.New(goldmark.WithExtensions(east.GFM, east.Footnote, mathExtension{}))
-
-func Layout(src []byte, o Options) *Document {
+// Layout lays out a goldmark tree whose text segments point into src. Front
+// ends for each source format build the tree; the layout never mutates it,
+// so one tree can be laid out again at a new width.
+func Layout(root ast.Node, src []byte, o Options) *Document {
 	if o.Theme == nil {
 		o.Theme = Dark
 	}
@@ -61,31 +58,12 @@ func Layout(src []byte, o Options) *Document {
 	if o.Cell.W == 0 || o.Cell.H == 0 {
 		o.Cell = CellSize{W: 8, H: 16}
 	}
-	src = stripFrontMatter(src)
-	root := markdown.Parser().Parse(text.NewReader(src))
 	l := &layouter{o: o, src: src, doc: &Document{Anchors: map[string]int{}}, slugs: map[string]int{}}
 	l.blocks(root)
 	for n := len(l.doc.Lines); n > 0 && len(l.doc.Lines[n-1].Spans) == 0; n-- {
 		l.doc.Lines = l.doc.Lines[:n-1]
 	}
 	return l.doc
-}
-
-func stripFrontMatter(src []byte) []byte {
-	src = bytes.ReplaceAll(src, []byte("\r\n"), []byte("\n"))
-	for _, fence := range []string{"---", "+++"} {
-		if !bytes.HasPrefix(src, []byte(fence+"\n")) {
-			continue
-		}
-		rest := src[len(fence)+1:]
-		if i := bytes.Index(rest, []byte("\n"+fence+"\n")); i >= 0 {
-			return rest[i+len(fence)+2:]
-		}
-		if bytes.HasSuffix(rest, []byte("\n"+fence)) {
-			return nil
-		}
-	}
-	return src
 }
 
 // --- emitting lines ---
@@ -197,6 +175,8 @@ func (l *layouter) block(n ast.Node) {
 		l.table(v)
 	case *eastast.FootnoteList:
 		l.footnotes(v)
+	case *Callout:
+		l.callout(v)
 	case *MathBlock:
 		l.startBlock()
 		if l.diagram(KindMath, v.TeX).State != Ready {
@@ -293,61 +273,13 @@ func plainText(n ast.Node, src []byte) string {
 	return b.String()
 }
 
-type alert struct {
-	title string
-	color Color
-}
-
 func (l *layouter) blockquote(n *ast.Blockquote) {
 	l.startBlock()
-	color := l.o.Theme.Quote
-	a, ok := l.alert(n)
-	if ok {
-		color = a.color
-	}
-	bar := []Span{{Text: "▎ ", Style: Style{FG: color}}}
+	bar := []Span{{Text: "▎ ", Style: Style{FG: l.o.Theme.Quote}}}
 	l.push(bar, bar)
-	if ok {
-		l.emit([]Span{{Text: a.title, Style: Style{FG: color, Bold: true}}})
-	}
 	l.blocks(n)
 	l.pop()
 	l.endBlock()
-}
-
-// alert recognizes GitHub's "> [!NOTE]" callouts and strips the marker.
-func (l *layouter) alert(n *ast.Blockquote) (alert, bool) {
-	p, ok := n.FirstChild().(*ast.Paragraph)
-	if !ok || p.Lines().Len() == 0 {
-		return alert{}, false
-	}
-	first := p.Lines().At(0)
-	marker := strings.ToUpper(strings.TrimSpace(string(first.Value(l.src))))
-	t := l.o.Theme
-	alerts := map[string]alert{
-		"[!NOTE]":      {"ⓘ Note", t.Note},
-		"[!TIP]":       {"✦ Tip", t.Tip},
-		"[!IMPORTANT]": {"❖ Important", t.Important},
-		"[!WARNING]":   {"▲ Warning", t.Warning},
-		"[!CAUTION]":   {"◆ Caution", t.Caution},
-	}
-	a, ok := alerts[marker]
-	if !ok {
-		return alert{}, false
-	}
-	for c := p.FirstChild(); c != nil; {
-		next := c.NextSibling()
-		if tx, ok := c.(*ast.Text); ok && tx.Segment.Stop <= first.Stop {
-			p.RemoveChild(p, c)
-			c = next
-			continue
-		}
-		break
-	}
-	if p.ChildCount() == 0 {
-		n.RemoveChild(n, p)
-	}
-	return a, true
 }
 
 var bullets = []string{"•", "◦", "▪"}
